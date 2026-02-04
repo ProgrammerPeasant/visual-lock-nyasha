@@ -13,8 +13,11 @@ function App() {
   const [mode, setMode] = useState('mic'); // 'mic' | 'file' | 'url'
   const [audioFile, setAudioFile] = useState(null);
   const [audioUrl, setAudioUrl] = useState('');
+  const [isResolving, setIsResolving] = useState(false);
   const [presetName, setPresetName] = useState('');
   const audioElRef = useRef(null);
+
+  const SC_CLIENT_ID = import.meta.env.VITE_SC_CLIENT_ID;
 
   // Toggle UI with 'H' key
   useEffect(() => {
@@ -84,12 +87,74 @@ function App() {
       setAudioUrl(e.target.value);
   };
 
-  const loadUrl = () => {
-      if (audioUrl) {
-          setAudioFile(audioUrl);
-          setMode('url');
-          setIsPlaying(false);
+  const loadUrl = async () => {
+      if (!audioUrl) return;
+
+      setIsResolving(true);
+
+      // Debug: Check if client ID is loaded
+      if (!SC_CLIENT_ID) {
+          console.error("SC_CLIENT_ID is missing! Make sure RESTART vite server after creating .env");
+          alert("Client ID missing or server not restarted.");
+          setIsResolving(false);
+          return;
       }
+
+      let finalUrl = audioUrl;
+
+      // SoundCloud Resolve Logic
+      if (audioUrl.includes('soundcloud.com')) {
+          try {
+              // Try API v2 Resolve
+              const resolveUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(audioUrl)}&client_id=${SC_CLIENT_ID}`;
+              const response = await fetch(resolveUrl);
+
+              if (!response.ok) {
+                  throw new Error(`SoundCloud API v2 Error: ${response.status}`);
+              }
+
+              const trackData = await response.json();
+
+              // Handle v2 media object
+              if (trackData.media && trackData.media.transcodings) {
+                  // Find progressive mp3 stream (preferred)
+                  const progressive = trackData.media.transcodings.find(
+                      t => t.format && t.format.protocol === 'progressive'
+                  );
+
+                  if (progressive) {
+                      // v2 requires a second call to get the actual stream URL
+                      const streamUrlWithId = `${progressive.url}?client_id=${SC_CLIENT_ID}`;
+                      const streamResp = await fetch(streamUrlWithId);
+                      const streamData = await streamResp.json();
+
+                      if (streamData.url) {
+                          finalUrl = streamData.url;
+                          console.log("Resolved SoundCloud v2 Stream:", finalUrl);
+                      } else {
+                          throw new Error("Failed to extract stream URL from transcoding");
+                      }
+                  } else {
+                      throw new Error("No progressive stream found (HLS not supported in this simple player)");
+                  }
+              } else if (trackData.stream_url) {
+                  // Fallback for v1-like response
+                   finalUrl = `${trackData.stream_url}?client_id=${SC_CLIENT_ID}`;
+              } else {
+                  throw new Error("Track is not streamable or restricted");
+              }
+          } catch (error) {
+              console.error("SoundCloud resolution failed:", error);
+              alert(`Error: ${error.message}. ensure your Client ID is valid.`);
+              setIsResolving(false);
+              return;
+          }
+      }
+
+      setAudioFile(finalUrl);
+      setMode('url');
+      setIsPlaying(false);
+      setIsResolving(false);
   };
 
   const handleHideUi = () => {
@@ -167,11 +232,13 @@ function App() {
                  <div className="url-input-group">
                      <input
                         type="text"
-                        placeholder="Paste direct audio URL"
+                        placeholder="Paste direct audio URL or SoundCloud link"
                         value={audioUrl}
                         onChange={handleUrlChange}
                      />
-                     <button onClick={loadUrl}>LOAD</button>
+                     <button onClick={loadUrl} disabled={isResolving}>
+                        {isResolving ? '...' : 'LOAD'}
+                     </button>
                  </div>
              )}
           </div>
