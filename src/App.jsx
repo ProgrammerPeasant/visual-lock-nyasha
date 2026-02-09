@@ -16,6 +16,9 @@ function App() {
   const [audioUrl, setAudioUrl] = useState('');
   const [isResolving, setIsResolving] = useState(false);
   const [presetName, setPresetName] = useState('');
+  // State for dynamic client ID
+  const [customClientId, setCustomClientId] = useState(localStorage.getItem('vl_sc_client_id') || '');
+
   const audioElRef = useRef(null);
   const hlsRef = useRef(null); // Ref to store Hls instance
 
@@ -102,7 +105,6 @@ function App() {
   const loadUrl = async () => {
       if (!audioUrl) return;
 
-      // Cleanup previous HLS
       if (hlsRef.current) {
           hlsRef.current.destroy();
           hlsRef.current = null;
@@ -110,143 +112,115 @@ function App() {
 
       setIsResolving(true);
 
-      const clientId = SC_CLIENT_ID || FALLBACK_CLIENT_ID;
-      let finalUrl = audioUrl;
+      // Priority: Custom set -> Env -> Fallback
+      // Try to use a known working web-client-id as fallback if env is failing
+      const clientId = customClientId || SC_CLIENT_ID || 'agP0r35t035076326e4e5e7b5a8c2d2e';
 
-      // SoundCloud Resolve Logic
-      if (audioUrl.includes('soundcloud.com')) {
-          try {
-              // Add timestamp to prevent proxy caching
-              const cacheBuster = `&_t=${Date.now()}`;
-              // Try different proxy strategy or rotate proxies if needed
-              // using allorigins with raw content
-              const CORS_PROXY = "https://api.allorigins.win/raw?url=";
-              const targetUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(audioUrl)}&client_id=${clientId}`;
+      try {
+          const cleanSCUrl = audioUrl.split('?')[0];
+          const resolveParams = new URLSearchParams({
+              url: cleanSCUrl,
+              client_id: clientId
+          });
 
-              console.log("Resolving SC URL:", targetUrl);
-              const response = await fetch(`${CORS_PROXY}${encodeURIComponent(targetUrl + cacheBuster)}`);
+          console.log(`Resolving via proxy with ID: ${clientId.substring(0,6)}...`);
+          const resolveResponse = await fetch(`/sc-api/resolve?${resolveParams.toString()}`);
 
-              if (!response.ok) {
-                  throw new Error(`Proxy/Network Error: ${response.status}`);
+          if (!resolveResponse.ok) {
+              if (resolveResponse.status === 403 || resolveResponse.status === 401) {
+                   const newId = prompt("SoundCloud Access Denied (401/403).\n\nThe builtin Client ID is outdated or blocked. Please enter a valid 'client_id' from SoundCloud website (F12 -> Network -> Filter: 'client_id').", clientId);
+                   if (newId && newId !== clientId) {
+                       setCustomClientId(newId);
+                       localStorage.setItem('vl_sc_client_id', newId);
+                       // Recursive retry with new ID would be better, but let's just ask user to click again for safety logic
+                       throw new Error("New Client ID saved. Please click LOAD again.");
+                   }
+                   throw new Error("Access Denied. A valid Web Client ID is required for API v2.");
               }
-
-              const responseText = await response.text();
-              // console.log("SC Raw Response:", responseText.substring(0, 500));
-
-              let trackData = null;
-              try {
-                if (!responseText || responseText.trim() === "") {
-                    throw new Error("Empty response from SoundCloud API");
-                }
-                trackData = JSON.parse(responseText);
-              } catch (e) {
-                console.error("JSON Parse Error. Response was:", responseText);
-                throw new Error("Failed to parse SoundCloud response");
-              }
-
-              console.log("SC Track Data:", trackData);
-
-              // Check for soft errors (200 OK but error body)
-              if (trackData.errors) {
-                  throw new Error(`SoundCloud API Error: ${trackData.errors[0]?.error_message || 'Unknown error'}`);
-              }
-
-              if (trackData.code === 401 || trackData.code === 403) {
-                  throw new Error("Invalid Client ID or Access Denied");
-              }
-
-              // Handle Playlists/Sets (Grab first track)
-              if (trackData.kind === 'playlist' && trackData.tracks && trackData.tracks.length > 0) {
-                  console.log("Playlist detected. Playing first track:", trackData.tracks[0].title);
-                  trackData = trackData.tracks[0];
-
-                  // Double check if the extracted track is valid
-                  if (!trackData.media && !trackData.stream_url) {
-                      // Sometimes playlist tracks are minimal objects, need to fetch full track
-                       if (trackData.id) {
-                           console.log("Fetching full track info for ID:", trackData.id);
-                           const trackRes = await fetch(`${CORS_PROXY}${encodeURIComponent(`https://api-v2.soundcloud.com/tracks/${trackData.id}?client_id=${clientId}`)}`);
-                           trackData = await trackRes.json();
-                       }
-                  }
-              }
-
-              if (trackData.media && trackData.media.transcodings) {
-                  // Try to find HLS stream first (best quality usually)
-                  const hlsStream = trackData.media.transcodings.find(
-                      t => t.format && t.format.protocol === 'hls' && t.format.mime_type === 'application/x-mpegURL'
-                  );
-                  // Fallback to progressive (mp3)
-                  const progressive = trackData.media.transcodings.find(
-                      t => t.format && t.format.protocol === 'progressive'
-                  );
-
-                  let endpoint = null;
-                  let isHls = false;
-
-                  if (hlsStream) {
-                      endpoint = hlsStream.url;
-                      isHls = true;
-                      console.log("Found HLS Stream");
-                  } else if (progressive) {
-                      endpoint = progressive.url;
-                      console.log("Found Progressive MP3 Stream");
-                  }
-
-                  if (endpoint) {
-                      const streamUrlWithId = `${endpoint}?client_id=${clientId}`;
-                      const streamResp = await fetch(`${CORS_PROXY}${encodeURIComponent(streamUrlWithId)}`);
-                      const streamData = await streamResp.json();
-
-                      if (streamData.url) {
-                          finalUrl = streamData.url;
-
-                          if (isHls && Hls.isSupported()) {
-                              // Initialize HLS
-                              const hls = new Hls();
-                              hls.loadSource(finalUrl);
-                              hls.attachMedia(audioElRef.current);
-                              hlsRef.current = hls;
-
-                              // We don't set src directly for HLS, hls.js handles it
-                              // But we need to set mode to 'url'
-                              setMode('url');
-                              setIsPlaying(false);
-                              setIsResolving(false);
-                              return;
-                          }
-                      } else {
-                          throw new Error("Failed to extract stream URL");
-                      }
-                  } else {
-                      throw new Error("No supported stream format found");
-                  }
-              } else if (trackData.stream_url) {
-                   finalUrl = `${trackData.stream_url}?client_id=${clientId}`;
-              } else {
-                  throw new Error("Track is not streamable or restricted");
-              }
-          } catch (error) {
-              console.error("SoundCloud resolution failed:", error);
-              if (error.message.includes('403') || error.message.includes('401')) {
-                   alert("SoundCloud Blocked Access. Try a different track.");
-              } else {
-                   alert(`Error loading track: ${error.message}`);
-              }
-              setIsResolving(false);
-              return;
+              if (resolveResponse.status === 404) throw new Error("Track not found.");
+              throw new Error(`Resolve Error: ${resolveResponse.status}`);
           }
-      }
 
-      // Fallback for standard MP3 or direct links
-      if (audioElRef.current) {
-          audioElRef.current.src = finalUrl;
-          audioElRef.current.load();
+          let trackData = await resolveResponse.json();
+
+          if (trackData.kind === 'playlist' && trackData.tracks && trackData.tracks.length > 0) {
+               console.log("Playlist detected. Playing first track:", trackData.tracks[0].title);
+               trackData = trackData.tracks[0];
+
+               // Refetch full track if needed (sometimes playlists have mini-objects)
+               if (!trackData.media && trackData.id) {
+                   const trackRes = await fetch(`/sc-api/tracks/${trackData.id}?client_id=${clientId}`);
+                   trackData = await trackRes.json();
+               }
+          }
+
+          console.log("Track Info:", trackData.title);
+
+          // 2. FIND STREAM URL
+          let mediaUrl = null;
+          let isHls = false;
+
+          if (trackData.media && trackData.media.transcodings) {
+              // Priority: HLS > Progressive
+              // Note: Sometimes HLS requires specific CORS headers not always available, but usually fine via CDN
+              // We try HLS first because it's better for streaming
+              const hlsStream = trackData.media.transcodings.find(
+                  t => t.format?.protocol === 'hls' && t.format?.mime_type === 'application/x-mpegURL'
+              );
+              const progressiveStream = trackData.media.transcodings.find(
+                  t => t.format?.protocol === 'progressive'
+              );
+
+              // Extract the raw API URL
+              const rawMediaUrl = (hlsStream || progressiveStream)?.url;
+
+              if (rawMediaUrl) {
+                  isHls = !!hlsStream;
+                  // IMPORTANT: The media URL also points to api-v2, so we must proxy it too!
+                  // Replace standard domain with our local proxy prefix
+                  mediaUrl = rawMediaUrl.replace('https://api-v2.soundcloud.com', '/sc-api');
+                  mediaUrl += `?client_id=${clientId}`;
+
+                  // Some V2 tracks require tracking metrics to be called, otherwise 403,
+                  // but usually just proper headers (which we fake in proxy) is enough.
+              }
+          }
+
+          if (!mediaUrl) throw new Error("No streamable media found.");
+
+          // 3. GET FINAL STREAM LINK
+          // This returns JSON { url: "https://cf-media.sndcdn.com/..." }
+          const streamResponse = await fetch(mediaUrl);
+          const streamData = await streamResponse.json();
+
+          if (!streamData.url) throw new Error("Failed to get final streaming URL.");
+
+          const finalUrl = streamData.url;
+          console.log("Stream Ready:", finalUrl);
+
+          // 4. PLAY
+          if (isHls && Hls.isSupported()) {
+              const hls = new Hls();
+              hls.loadSource(finalUrl);
+              hls.attachMedia(audioElRef.current);
+              hlsRef.current = hls; // Save ref
+          } else {
+              if (audioElRef.current) {
+                  audioElRef.current.src = finalUrl;
+                  audioElRef.current.load();
+              }
+          }
+
+          setAudioFile(finalUrl); // Sync state
+          setMode('url');
+          setIsPlaying(false); // Let user start
+
+      } catch (error) {
+          console.error("SoundCloud Error:", error);
+          alert(`SoundCloud Error: ${error.message}`);
+      } finally {
+          setIsResolving(false);
       }
-      setAudioFile(finalUrl);
-      setMode('url');
-      setIsPlaying(false);
-      setIsResolving(false);
   };
 
   const handleHideUi = () => {
