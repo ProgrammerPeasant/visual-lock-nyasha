@@ -1,0 +1,9 @@
+{
+  "rewrites": [
+    {
+      "source": "/sc-api/(.*)",
+      "destination": "/api/proxy?endpoint=$1"
+    }
+  ]
+}
+
