@@ -14,6 +14,11 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Endpoint missing in query params' });
   }
 
+  // Удаляем служебный параметр 'path', который Vercel иногда добавляет из роутинга
+  if (queryParams.path) {
+    delete queryParams.path;
+  }
+
   // Если endpoint пришел массивом (бывает в Vercel при rewrite), берем первый элемент или склеиваем
   if (Array.isArray(endpoint)) {
     endpoint = endpoint.join('/');
