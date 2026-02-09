@@ -44,7 +44,8 @@ export default async function handler(req, res) {
       headers: {
         'Origin': 'https://soundcloud.com',
         'Referer': 'https://soundcloud.com/',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01'
       }
     });
 
@@ -56,7 +57,18 @@ export default async function handler(req, res) {
 
     const data = await response.text();
 
-    // Если статус ошибки, попробуем вернуть тело как есть, чтобы видеть детали от SC
+    // Если статус ошибки, возвращаем JSON с отладкой, если это возможно
+    if (!response.ok) {
+        // Если это 404/403, велик шанс, что SC нас забанил или URL кривой.
+        // Вернем структуру ошибки, чтобы клиент мог показать детали.
+        return res.status(response.status).json({
+            error: 'Proxy Upstream Error',
+            status: response.status,
+            targetUrl: targetUrl, // ВАЖНО: возвращаем URL, который мы сформировали
+            scBody: data.substring(0, 500) // Первые 500 символов ответа SC
+        });
+    }
+
     res.status(response.status).send(data);
 
   } catch (error) {
