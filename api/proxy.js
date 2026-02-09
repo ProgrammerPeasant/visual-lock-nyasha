@@ -49,6 +49,8 @@ export default async function handler(req, res) {
       headers: {
         'Origin': 'https://soundcloud.com',
         'Referer': 'https://soundcloud.com/',
+        // Имитируем AJAX запрос, это критично для некоторых эндпоинтов SC
+        'X-Requested-With': 'XMLHttpRequest',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/javascript, */*; q=0.01'
       }
