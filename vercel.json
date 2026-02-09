@@ -1,9 +1,12 @@
 {
   "rewrites": [
     {
-      "source": "/sc-api/(.*)",
-      "destination": "/api/proxy?endpoint=$1"
+      "source": "/sc-api/:path*",
+      "destination": "/api/proxy?endpoint=:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
-
